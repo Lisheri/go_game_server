@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "server",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "port": 2345,
+      "host": "127.0.0.1",
+      "program": "${workspaceFolder}/loginServer.go",
+      // "env": {
+      //   "GOPATH": "$GOPATH"
+      // },
+      "args": [],
+      "showLog": true
+    }
+  ]
+}
