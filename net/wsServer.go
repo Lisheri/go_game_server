@@ -1,17 +1,21 @@
 package net
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"ms_sg_back/utils"
 	"sync"
 
+	"github.com/forgoer/openssl"
 	"github.com/gorilla/websocket"
 )
 
 // ws服务
 type wsServer struct {
 	wsConnect *websocket.Conn
-	router    *router
+	router    *Router
 	// 回复信息通过通道的形式发送给管道, 然后在管道中进一步处理, 本质上是一个 [队列]
 	outChan      chan *WsMsgRes
 	Seq          int64
@@ -29,7 +33,7 @@ func NewWsServer(wsConnect *websocket.Conn) *wsServer {
 }
 
 // 设置router
-func (w *wsServer) Router(router *router) {
+func (w *wsServer) Router(router *Router) {
 	w.router = router
 }
 
@@ -44,7 +48,12 @@ func (w *wsServer) SetProperty(key string, value interface{}) {
 func (w *wsServer) GetProperty(key string) (interface{}, error) {
 	w.propertyLock.RLock()         // 上锁, 这里要用读取锁
 	defer w.propertyLock.RUnlock() // 解锁
-	return w.property[key], nil
+	// 拿不到则抛错, 通过ok判断属性是否存在
+	if value, ok := w.property[key]; ok {
+		return value, nil
+	} else {
+		return nil, errors.New("属性不存在")
+	}
 }
 
 func (w *wsServer) RemoveProperty(key string) {
@@ -66,10 +75,30 @@ func (w *wsServer) Push(name string, data interface{}) {
 	w.outChan <- res
 }
 
+func (w *wsServer) Write(msg *WsMsgRes) {
+	// msg.Body转换为json
+	data, err := json.Marshal(msg.Body)
+	if err != nil {
+		log.Panicln("数据格式非法: ", err)
+	}
+	secretKey, err := w.GetProperty("secretKey")
+	if err == nil {
+		// 加密
+		key := secretKey.(string)
+		// 对data加密
+		data, _ = utils.AesCBCEncrypt(data, []byte(key), []byte(key), openssl.ZEROS_PADDING)
+	}
+	// 压缩
+	if data, err := utils.Zip(data); err == nil {
+		// 将数据写回去
+		w.wsConnect.WriteMessage(websocket.BinaryMessage, data)
+	}
+}
+
 // 启动读写数据的处理逻辑
 func (w *wsServer) Start() {
 	// 通道一旦建立, 那么收发消息需要一直监听
-	// 创建两个协程, 一个读, 一个发
+	// 创建两个协程, 一个读, 一个发, 读完了就写
 	go w.readMsgLoop()
 	go w.writeMsgLoop()
 }
@@ -94,6 +123,43 @@ func (w *wsServer) readMsgLoop() {
 			break
 		}
 		fmt.Println("收到了", data)
+		// 收到消息后, 需要对消息进行解析, 前端发过来的格式是json
+		// 1. 解压data, unzip
+		data, err = utils.UnZip(data)
+		if err != nil {
+			log.Println("解压数据出错, 非法格式: ", err)
+		}
+		// 2. 前端消息是加密的, 需要进行解密
+		secretKey, err := w.GetProperty("secretKey")
+		if err == nil {
+			// 有加密
+			key := secretKey.(string)
+			d, err := utils.AesCBCDecrypt(data, []byte(key), []byte(key), openssl.ZEROS_PADDING)
+			if err != nil {
+				log.Println("数据格式错误, 解密失败: ", err)
+				// TODO 出错, 发握手(正常是游戏客户端在初始化连接时发起握手)
+				// w.Handshake()
+				// 出错之后, 同样需要重新握手, 更换秘钥
+				w.Handshake()
+			} else {
+				data = d
+			}
+		} else {
+			log.Println("获取密钥出错: ", err)
+		}
+		// 3. data -> body
+		body := &ReqBody{}
+		err = json.Unmarshal(data, body)
+		if err != nil {
+			log.Println("数据格式有误, 格式非法: ", err)
+		} else {
+			// 获取到前端传递的数据了, 需要利用这些数据处理具体的业务
+			req := &WsMsgReq{Conn: w, Body: body}
+			res := &WsMsgRes{Body: &ResBody{Name: body.Name, Seq: body.Seq}}
+			w.router.Run(req, res)
+			// 退出协程, res写入管道outChan
+			w.outChan <- res
+		}
 	}
 	// 跳出循环说明中间结束或者出现问题, 同样执行关闭
 	w.Close()
@@ -102,14 +168,56 @@ func (w *wsServer) readMsgLoop() {
 func (w *wsServer) writeMsgLoop() {
 	for {
 		select {
+			// 从管道中获取数据, 先进先出, 从队尾获取
 		case msg := <-w.outChan:
-			// TODO 暂不处理
-			fmt.Println(msg)
+			w.Write(msg)
 		}
 	}
 }
 
 // 关闭ws连接
-func (w *wsServer) Close() {
-	_ = w.wsConnect.Close()
+func (server *wsServer) Close() {
+	_ = server.wsConnect.Close()
+}
+
+// 握手相关常量
+const HandshakeMsg = "handshake"
+
+// 当游戏客户端发送请求的时候, 会先进行握手协议
+// 后端会发送对应的加密key给客户端
+// 客户端在发送数据的时候, 会使用此key进行加密处理
+// ? 一旦断开链接, 重新生成链接时, 需要重新进行握手, 生成加密解密数据的秘钥 key
+func (server *wsServer) Handshake() {
+	// 首先获取secretKey
+	key := ""
+	secretKey, err := server.GetProperty("secretKey")
+	if err == nil {
+		// 转string
+		key = secretKey.(string)
+	} else {
+		// 报错说明没有值, 随机生成一个key
+		key = utils.RandSeq(16)
+	}
+	// 封装一个message方法, 用于握手
+	handshake := &Handshake{Key: key}
+
+	body := &ResBody{
+		Name: HandshakeMsg,
+		Msg:  handshake,
+	}
+	// 先处理为json, 在进行压缩传递
+	if data, err := json.Marshal(body); err == nil {
+		// 防止key发生变化, 需要重新设置
+		if key != "" {
+			server.SetProperty("secretKey", key)
+		} else {
+			server.RemoveProperty("secretKey")
+		}
+		// data, _ = utils.AesCBCEncrypt(data, []byte(key), []byte(key), openssl.ZEROS_PADDING)
+		// 压缩
+		if data, err = utils.Zip([]byte(data)); err == nil {
+			// 发送握手消息(实际上就是写入数据)
+			server.wsConnect.WriteMessage(websocket.BinaryMessage, data)
+		}
+	}
 }

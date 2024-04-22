@@ -36,3 +36,7 @@ type WsConnect interface {
 	Addr() string
 	Push(name string, data interface{})
 }
+
+type Handshake struct {
+	Key string `json:"key"`
+}

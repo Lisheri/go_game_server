@@ -9,7 +9,7 @@ import (
 
 type server struct {
 	addr   string  // 地址
-	router *router // 路由
+	router *Router // 路由
 }
 
 // 用于初始化server
@@ -17,6 +17,11 @@ func NewServer(addr string) *server {
 	return &server{
 		addr: addr,
 	}
+}
+
+// 处理路由指令
+func (server *server) Router(router *Router) {
+	server.router = router
 }
 
 // 启动服务
@@ -54,6 +59,8 @@ func (s *server) wsHandler(w http.ResponseWriter, r *http.Request) {
 	wsServer := NewWsServer(wsConnect)
 	wsServer.Router(s.router)
 	wsServer.Start()
+	// 发起握手
+	wsServer.Handshake()
 	// 读取信息
 	// 客户端格式约束:  { Name: "account.login" }, 收到之后进行解析
 
