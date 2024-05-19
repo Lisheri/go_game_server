@@ -20,11 +20,12 @@ func TestAndInitDB() {
 		panic(errInfo)
 	}
 	dbConnectInfo := fmt.Sprintf(
-		"%s:%s@tcp(%s:%s)/?charset=%s&parseTime=True&loc=Local",
+		"%s:%s@tcp(%s:%s)/%s?charset=%s&parseTime=True&loc=Local",
 		mysqlConfig["user"],
 		mysqlConfig["password"],
 		mysqlConfig["host"],
 		mysqlConfig["port"],
+		mysqlConfig["dbname"], 
 		mysqlConfig["charset"])
 	var err error
 	Engine, err = xorm.NewEngine("mysql", dbConnectInfo)

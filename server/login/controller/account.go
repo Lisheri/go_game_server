@@ -91,7 +91,20 @@ func (a *Account) login(req *net.WsMsgReq, res *net.WsMsgRes) {
 		ll.Hardware = loginReq.Hardware
 		ll.UId = user.UId
 		db.Engine.Table(ll).Insert(ll)
+	} else {
+		ll.IsLogout = 0
+		ll.Ip = loginReq.Ip
+		ll.LoginTime = time.Now()
+		ll.Session = token
+		ll.Hardware = loginReq.Hardware
+		ll.UId = user.UId
+		_, err := db.Engine.Table(ll).Insert(ll)
+		if err != nil {
+			log.Println(err)
+		}
 	}
 
 	// 缓存当前用户和当前ws的连接(用户其他地方登录需要断开当前连接)
+	// 存入缓存
+	net.Mgr.UserLogin(req.Conn, user.UId, token)
 }

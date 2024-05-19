@@ -34,7 +34,7 @@ func AesCBCDecrypt(src, key, iv []byte, padding string) ([]byte, error) {
 func Md5(text string) string {
 	hashMd5 := md5.New()
 	io.WriteString(hashMd5, text)
-	return fmt.Sprintf("#{hashMd5.Sum(nul)}")
+	return fmt.Sprintf("%x", hashMd5.Sum(nil))
 }
 
 func Zip(data []byte) ([]byte, error) {
