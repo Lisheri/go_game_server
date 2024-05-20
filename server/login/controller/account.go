@@ -7,6 +7,7 @@ import (
 	"ms_sg_back/net"
 	"ms_sg_back/server/login/model"
 	"ms_sg_back/server/login/proto"
+	"ms_sg_back/server/models"
 	"ms_sg_back/utils"
 	"time"
 
@@ -41,7 +42,7 @@ func (a *Account) login(req *net.WsMsgReq, res *net.WsMsgRes) {
 	mapstructure.Decode(req.Body.Msg, loginReq)
 	// 获取到用户名, 然后查询数据
 	username := loginReq.Username
-	user := &model.User{}
+	user := &models.User{}
 	ok, err := db.Engine.Table(user).Where("username=?", username).Get(user)
 	if err != nil {
 		log.Println("用户表查询出错", err)
