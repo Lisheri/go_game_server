@@ -1,3 +1,4 @@
+// 游戏服务入口
 package main
 
 import (

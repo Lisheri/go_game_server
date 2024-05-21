@@ -1,6 +1,9 @@
 package net
 
-import "strings"
+import (
+	"log"
+	"strings"
+)
 
 // 处理器(具体业务逻辑)
 type HandlerFunc func(req *WsMsgReq, res *WsMsgRes)
@@ -25,6 +28,19 @@ func (group *group) exec(name string, req *WsMsgReq, res *WsMsgRes) {
 	handler := group.handlerMap[name]
 	if handler != nil {
 		handler(req, res)
+	} else {
+		// 降级处理网关路由
+		group.execGateWay(req, res)
+	}
+}
+
+func (group *group) execGateWay(req *WsMsgReq, res *WsMsgRes) {
+	handler := group.handlerMap["*"]
+	if handler != nil {
+		handler(req, res)
+	} else {
+		// 未找到路由
+		log.Panicln("路由未定义")
 	}
 }
 
@@ -63,6 +79,9 @@ func (router *Router) Run(req *WsMsgReq, res *WsMsgRes) {
 		if group.prefix == prefix {
 			// 执行对应的逻辑
 			group.exec(name, req, res)
+		} else if group.prefix == "*" {
+			// 网关服务匹配
+			group.execGateWay(req, res)
 		}
 	}
 }

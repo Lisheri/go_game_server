@@ -112,7 +112,7 @@ func (w *wsServer) readMsgLoop() {
 	defer func() {
 		// 出现问题也需要关闭
 		if err := recover(); err != nil {
-			log.Fatal(err)
+			log.Println("捕捉异常: ", err)
 			w.Close()
 		}
 	}()

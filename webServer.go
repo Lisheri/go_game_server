@@ -1,3 +1,4 @@
+// 账号服务入口
 package main
 
 import (
