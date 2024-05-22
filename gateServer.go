@@ -25,8 +25,10 @@ func main() {
 	port := config.File.MustValue("gate_server", "port", "8004")
 
 	s := net.NewServer(host + ":" + port)
+	s.NeedSecret(true)
 	gate.Init()
 	s.Router(gate.Router)
+	// 网关需要加密, 再传递给客户端
 	// 路由指令
 	// 启动服务
 	s.Start()

@@ -12,6 +12,8 @@ func main() {
 	port := config.File.MustValue("login_server", "port", "8003")
 
 	s := net.NewServer(host + ":" + port)
+	// 游戏服务为内部服务, 无需进行加密, 设置标识为false
+	s.NeedSecret(false)
 	login.Init()
 	s.Router(login.Router)
 	// 路由指令

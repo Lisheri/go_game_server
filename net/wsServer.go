@@ -3,13 +3,14 @@ package net
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"ms_sg_back/utils"
 	"sync"
+	"time"
 
 	"github.com/forgoer/openssl"
 	"github.com/gorilla/websocket"
+	"github.com/mitchellh/mapstructure"
 )
 
 // ws服务
@@ -21,15 +22,23 @@ type wsServer struct {
 	Seq          int64
 	property     map[string]interface{} // 属性, 是一个kv形式, k是string
 	propertyLock sync.RWMutex           // 属性锁, 写入的时候先上锁, 在进行写入操作
+	needSecret   bool                   // 是否需要加密 (仅网关与客户端交流需要加密)
 }
 
-func NewWsServer(wsConnect *websocket.Conn) *wsServer {
-	return &wsServer{
-		wsConnect: wsConnect,                    // 连接
-		Seq:       0,                            // 序列号
-		outChan:   make(chan *WsMsgRes, 1000),   // 管道
-		property:  make(map[string]interface{}), // 属性
+var cid int64 = 0 // 暂存客户端id(自增)
+func NewWsServer(wsConnect *websocket.Conn, needSecret bool) *wsServer {
+	s := &wsServer{
+		wsConnect:  wsConnect,                    // 连接
+		Seq:        0,                            // 序列号
+		outChan:    make(chan *WsMsgRes, 1000),   // 管道
+		property:   make(map[string]interface{}), // 属性
+		needSecret: needSecret,                   // 是否加密标识
 	}
+	// 客户端ic自增
+	cid++
+	// 设置当前服务对应的客户端cid, 防止在网关服务中获取cid取不到
+	s.SetProperty("cid", cid)
+	return s
 }
 
 // 设置router
@@ -79,7 +88,7 @@ func (w *wsServer) Write(msg *WsMsgRes) {
 	// msg.Body转换为json
 	data, err := json.Marshal(msg.Body)
 	if err != nil {
-		log.Panicln("数据格式非法: ", err)
+		log.Panicln("ws服务端写入数据格式非法: ", err)
 	}
 	secretKey, err := w.GetProperty("secretKey")
 	if err == nil {
@@ -92,7 +101,11 @@ func (w *wsServer) Write(msg *WsMsgRes) {
 	if data, err := utils.Zip(data); err == nil {
 		// 将数据写回去
 		w.wsConnect.WriteMessage(websocket.BinaryMessage, data)
+	} else {
+		log.Println("ws服务端写数据出错", err)
 	}
+	d, _ := json.Marshal(msg)
+	log.Println("ws服务端写数据", string(d))
 }
 
 // 启动读写数据的处理逻辑
@@ -112,52 +125,68 @@ func (w *wsServer) readMsgLoop() {
 	defer func() {
 		// 出现问题也需要关闭
 		if err := recover(); err != nil {
-			log.Println("捕捉异常: ", err)
+			log.Println("ws服务端捕捉异常: ", err)
 			w.Close()
 		}
 	}()
 	for {
 		_, data, err := w.wsConnect.ReadMessage()
 		if err != nil {
-			log.Println("收消息出现错误", err)
+			log.Println("ws服务收消息出现错误", err)
 			break
 		}
-		fmt.Println("收到了", data)
+		// fmt.Println("收到了", data)
 		// 收到消息后, 需要对消息进行解析, 前端发过来的格式是json
 		// 1. 解压data, unzip
 		data, err = utils.UnZip(data)
 		if err != nil {
 			log.Println("解压数据出错, 非法格式: ", err)
 		}
-		// 2. 前端消息是加密的, 需要进行解密
-		secretKey, err := w.GetProperty("secretKey")
-		if err == nil {
-			// 有加密
-			key := secretKey.(string)
-			d, err := utils.AesCBCDecrypt(data, []byte(key), []byte(key), openssl.ZEROS_PADDING)
-			if err != nil {
-				log.Println("数据格式错误, 解密失败: ", err)
-				// TODO 出错, 发握手(正常是游戏客户端在初始化连接时发起握手)
-				// w.Handshake()
-				// 出错之后, 同样需要重新握手, 更换秘钥
-				w.Handshake()
+		// 2. 如果消息是需要加密的, 则需要进行解密(仅游戏客户端与网关交流需要如下操作, 网关与游戏服务端无需加解密, 全程服务器完成)
+		if w.needSecret {
+			secretKey, err := w.GetProperty("secretKey")
+			if err == nil {
+				// 有加密
+				key := secretKey.(string)
+				// 利用秘钥进行解密
+				d, err := utils.AesCBCDecrypt(data, []byte(key), []byte(key), openssl.ZEROS_PADDING)
+				if err != nil {
+					log.Println("数据格式错误, 解密失败: ", err)
+					// TODO 出错, 发握手(正常是游戏客户端在初始化连接时发起握手)
+					// w.Handshake()
+					// 出错之后, 同样需要重新握手, 更换秘钥
+					w.Handshake()
+				} else {
+					data = d
+				}
 			} else {
-				data = d
+				log.Println("获取密钥出错: ", err)
 			}
-		} else {
-			log.Println("获取密钥出错: ", err)
 		}
 		// 3. data -> body
 		body := &ReqBody{}
 		err = json.Unmarshal(data, body)
 		if err != nil {
-			log.Println("数据格式有误, 格式非法: ", err)
+			log.Println("ws服务器json解析错误, 格式非法: ", err)
 		} else {
 			// 获取到前端传递的数据了, 需要利用这些数据处理具体的业务
 			req := &WsMsgReq{Conn: w, Body: body}
 			res := &WsMsgRes{Body: &ResBody{Name: body.Name, Seq: body.Seq}}
-			w.router.Run(req, res)
-			// 退出协程, res写入管道outChan
+			if req.Body.Name == "heartbeat" {
+				// 心跳回复
+				h := &Heartbeat{}
+				// 将msg解析为心跳
+				mapstructure.Decode(req.Body.Msg, h)
+				// ns -> ms
+				h.STime = time.Now().UnixNano() / 1e6
+				// 设回去
+				res.Body.Msg = h
+			} else {
+				if w.router != nil {
+					w.router.Run(req, res)
+				}
+			}
+			// res写入管道outChan
 			w.outChan <- res
 		}
 	}
@@ -168,7 +197,7 @@ func (w *wsServer) readMsgLoop() {
 func (w *wsServer) writeMsgLoop() {
 	for {
 		select {
-			// 从管道中获取数据, 先进先出, 从队尾获取
+		// 从管道中获取数据, 先进先出, 从队尾获取
 		case msg := <-w.outChan:
 			w.Write(msg)
 		}

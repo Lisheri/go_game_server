@@ -10,6 +10,7 @@ import (
 type server struct {
 	addr   string  // 地址
 	router *Router // 路由
+	needSecret bool // 是否需要加密, 仅在网关和客户端交互时, 才需要加密, 但是网关和内部服务交流时, 则无需加密, 避免造成cpu资源浪费
 }
 
 // 用于初始化server
@@ -17,6 +18,10 @@ func NewServer(addr string) *server {
 	return &server{
 		addr: addr,
 	}
+}
+
+func (server *server) NeedSecret(needSecret bool) {
+	server.needSecret = needSecret
 }
 
 // 处理路由指令
@@ -56,7 +61,7 @@ func (s *server) wsHandler(w http.ResponseWriter, r *http.Request) {
 	// 消息需要约定格式, 用于处理收发信息
 	// err = wsConnect.WriteMessage(websocket.BinaryMessage, []byte("hello"))
 	// fmt.Println(err);
-	wsServer := NewWsServer(wsConnect)
+	wsServer := NewWsServer(wsConnect, s.needSecret)
 	wsServer.Router(s.router)
 	wsServer.Start()
 	// 发起握手

@@ -51,9 +51,9 @@ func (h *Handler) all(req *net.WsMsgReq, res *net.WsMsgRes) {
 	// 正确连接
 	// 上锁读取代理服务器
 	h.proxyMutex.RLock()
-	proxyClientMap := h.proxyMap[proxySrc]
-	if proxyClientMap == nil {
-		proxyClientMap = map[int64]*net.ProxyClient{}
+	_, ok := h.proxyMap[proxySrc]
+	if !ok {
+		h.proxyMap[proxySrc] = make(map[int64]*net.ProxyClient)
 	}
 	h.proxyMutex.RUnlock()
 	// 获取客户端id
@@ -65,7 +65,7 @@ func (h *Handler) all(req *net.WsMsgReq, res *net.WsMsgRes) {
 	}
 	cid := originCid.(int64)
 	// 从proxyClientMap中获取对应的代理客户端实例
-	proxyClient := proxyClientMap[cid]
+	proxyClient := h.proxyMap[proxySrc][cid]
 	if proxyClient == nil {
 		// 代理为空说明是首次连接代理
 		proxyClient = net.NewProxyClient(proxySrc)
@@ -77,7 +77,9 @@ func (h *Handler) all(req *net.WsMsgReq, res *net.WsMsgRes) {
 			res.Body.Code = constant.ProxyConnectError
 			return
 		}
+		h.proxyMutex.Lock()
 		h.proxyMap[proxySrc][cid] = proxyClient
+		h.proxyMutex.Unlock()
 		// 存储连接
 		proxyClient.SetProperty("cid", cid)
 		proxyClient.SetProperty("proxy", proxySrc)

@@ -74,7 +74,7 @@ func (c *ClientConnect) Start() bool {
 	// 开启消息接收
 	// 同时等待握手消息的返回
 	c.handshake = false
-	// 开启读消息协程
+	// 开启读取游戏客户端推送消息协程
 	go c.wsReadLoop()
 	return c.waitHandShake()
 }
@@ -145,17 +145,18 @@ func (c *ClientConnect) write(body interface{}) error {
 		log.Panicln("数据格式非法: ", err)
 		return err
 	}
-	secretKey, err := c.GetProperty("secretKey")
-	if err == nil {
-		// 加密
-		key := secretKey.(string)
-		// 对data加密
-		data, err = utils.AesCBCEncrypt(data, []byte(key), []byte(key), openssl.ZEROS_PADDING)
-		if err != nil {
-			log.Println("加密失败")
-			return err
-		}
-	}
+	// 向游戏服务端推送消息, 内部服务交流, 无需加密
+	// secretKey, err := c.GetProperty("secretKey")
+	// if err == nil {
+	// 	// 加密
+	// 	key := secretKey.(string)
+	// 	// 对data加密
+	// 	data, err = utils.AesCBCEncrypt(data, []byte(key), []byte(key), openssl.ZEROS_PADDING)
+	// 	if err != nil {
+	// 		log.Println("加密失败")
+	// 		return err
+	// 	}
+	// }
 	// 压缩
 	if data, err := utils.Zip(data); err == nil {
 		// 将数据写回去
@@ -172,28 +173,17 @@ func (c *ClientConnect) write(body interface{}) error {
 }
 
 func (c *ClientConnect) wsReadLoop() {
-	// for {
-	// 	_, data, err := c.wsConnect.ReadMessage()
-	// 	fmt.Println(data)
-	// 	fmt.Println(err)
-	// // 收到握手消息, 发送一个channel
-	// c.handshake = true
-	// // 发送消息
-	// c.handshakeChannel <- true
-	// 	// 读取消息时, 可能会收到很多消息, 比如 握手, 心跳, 请求信息(account.login)
-	// 	// 服务端 写消息
-	// }
 	defer func() {
 		// 出现问题也需要关闭
 		if err := recover(); err != nil {
-			log.Println("捕捉异常: ", err)
+			log.Println("网关服务端捕捉异常: ", err)
 			c.Close()
 		}
 	}()
 	for {
 		_, data, err := c.wsConnect.ReadMessage()
 		if err != nil {
-			log.Println("收消息出现错误", err)
+			log.Println("网关服务收消息出现错误", err)
 			break
 		}
 		fmt.Println("收到了", data)
@@ -221,7 +211,7 @@ func (c *ClientConnect) wsReadLoop() {
 		body := &ResBody{}
 		err = json.Unmarshal(data, body)
 		if err != nil {
-			log.Println("数据格式有误, 格式非法: ", err)
+			log.Println("网关服务器数据格式有误, 格式非法: ", err)
 		} else {
 			// 获取到前端传递的数据了, 需要利用这些数据处理具体的业务
 			// 区分握手 和 其他请求
@@ -276,8 +266,8 @@ func (c *ClientConnect) Close() {
 	_ = c.wsConnect.Close()
 }
 
+// 把请求发送给代理服务器 登录服务器
 func (c *ClientConnect) Send(name string, msg interface{}) (*ResBody, error) {
-	// 把请求发送给代理服务器 登录服务器
 	c.syncCtxLock.Lock()
 	c.Seq++
 	seq := c.Seq
@@ -291,6 +281,7 @@ func (c *ClientConnect) Send(name string, msg interface{}) (*ResBody, error) {
 	if err != nil {
 		sc.cancel()
 	} else {
+		// 等待消息
 		r := sc.waitMsg()
 		if r == nil {
 			res.Code = constant.ProxyConnectError
@@ -309,5 +300,9 @@ func NewClientConnect(wsConnect *websocket.Conn) *ClientConnect {
 	return &ClientConnect{
 		wsConnect:        wsConnect,
 		handshakeChannel: make(chan bool), // 初始化channel
+		Seq:              0,
+		isClosed:         false,
+		property:         make(map[string]interface{}),
+		syncCtxMap:       map[int64]*syncCtx{},
 	}
 }
